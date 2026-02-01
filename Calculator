@@ -1,0 +1,191 @@
+"""
+B_found: Blasius curvature (computed by shooting so f'(ζ_max) ≈ 1).
+B_given: spreadsheet / assignment value (0.57) (used only to locate the point in PART (b) as requested).
+The program computes B_found and also uses B_given only for PART (b) (this is shown).
+Viscosity handling clarified: ν (nu) was used to convert ζ -> y and compute δ_99, δ* at 100 °C.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import odeint, trapezoid
+from scipy.optimize import brentq
+# Given parameters
+U_inf = 4 # m/s (free-stream velocity)
+x_m = 0.3 # m (streamwise location, 300 mm)
+B_given = 0.57 # GIVEN spreadsheet value used for PART (b) only.
+# Kinematic viscosity chosen for parts (b) & (c): air at 100 °C (given) @ 1 ATMOS (assumed)
+# It is safe to assume the viscosity of air at 1 atm since the experiment is likely to be conducted at sea level.
+nu = 2.3e-5 # m^2/s approximate kinematic viscosity of air at 100 °C, assuming 1atmos. pressure
+# Similarity coordinate justification and zeta value.
+# Similarity coordinate: ζ = y / sqrt(nu * x / U_inf)
+# Physical mapping: y = ζ * sqrt(nu * x / U_inf)
+# Choosing ζ domain (arbritary value after asymtote reached) and choosing resolution:
+zeta_max = 8 # covers the outer region we can clearly see an asymptote on part (a) plots.
+n_points = 1000 # sufficiently dense grid for accurate interpolation/integration.
+ # Higher values exponentially use computational resources for higher accuracy.
+ # Note: Any value from 500-50000 is valid, modern computers are very fast and will run 50000 points almost immediately
+ #however out of principle we still attempt to save resources where possible while programming.
+ # Hence, n_points = 1000 (still accurate), chosen via manual iteration (testing a min of 500 and a max of 50000).
+#In the appendix there is a check to find the physical size of the dy resolution. At n_points = 1000, physical dy res. = 10.511 μm.
+#This is a justified approach to the selection of n_points. Zeta_max is visually selected as an arbitrary value after the (a) plots asymptote toward 1.
+zeta = np.linspace(0, zeta_max, n_points)
+dzeta = zeta[1] - zeta[0]
+# Blasius ODE (3rd order → system of first order ODEs)
+def blasius_system(y, z):
+ """
+ y[0] = f, y[1] = f', y[2] = f''
+ dy/dζ = [f', f'', -0.5 * f * f'']
+ (equivalent to f''' + 0.5 f f'' = 0)
+ """
+ f = y[0]; fp = y[1]; fpp = y[2]
+ return [fp, fpp, -0.5 * f * fpp]
+# Integrator: integrate given B_star = f''(0)
+def integrate_for_Bstar(B_star, z_grid=zeta):
+ """
+ Integrate Blasius ODE using the initial curvature f''(0) = B_star.
+ Returns (f, f', f'') sampled onto 'z_grid'.
+ """
+ y0 = [0, 0, B_star]
+ sol = odeint(blasius_system, y0, z_grid)
+ return sol[:, 0], sol[:, 1], sol[:, 2]
+# Residual function for the shooting method
+# Residual meaning the mismatch between computed f'(ζ_max) and target value 1 (zero when boundary condition is satisfied).
+eval_counter = {"n": 0} # counter for no. iterations (residual evaluations).
+def residual_Bstar(B_star):
+ """
+ Residual for shooting: f'(ζ_max; B_star) → 1
+ We look for B_star such that f'(ζ_max) ≈ 1 (standard Blasius behaviour).
+ """
+ eval_counter["n"] += 1
+ _, fp_tmp, _ = integrate_for_Bstar(B_star)
+ return fp_tmp[-1] - 1
+# Find B_found using Brent's method
+# Range chosen conservatively; expand if needed.
+B_low, B_high = 0.01, 1
+if residual_Bstar(B_low) * residual_Bstar(B_high) > 0:
+ B_low, B_high = 0.0001, 5 # massively overkill expanded range, but just in case.
+ if residual_Bstar(B_low) * residual_Bstar(B_high) > 0:
+ raise RuntimeError("Cannot bracket roots for f''(0), increase zeta_max or expand brackets further.")
+# Cannot continue computation without B_low/high. Hence, a RuntimeError is used here (or a syntax error would occur due to missing variable(s)).
+B_found = brentq(residual_Bstar, B_low, B_high, xtol=1e-12, rtol=1e-12, maxiter=20) # Searching for solution within 1e-12
+iterations = eval_counter["n"] # Counts residual evaluations performed by the solver (helps optimise maxiter value).
+print("Inputs → U_inf = 4 m/s (free-stream velocity), x = 0.3m, B = 0.57 (Only used for part (b).")
+print("PART (a) results (see plots, added checks for B_found and f'(0)≈1 shown:")
+print(" Blasius curvature (computed via the shooting method), (expct. f''(0) ≈ 0.332 from theory). f''(0) =", B_found, "after", iterations, "iterations.")
+#Printout for B_found
+# - We define residual R(B) = f'(ζ_max; B) - 1.0. A root R(B)=0 means the far-field boundary conditions of f'(ζ_max)=1 are satisfied.
+# - brentq requires a bracket [B_low, B_high] such that R(B_low)*R(B_high) < 0 (a sign change).
+# - In short: brentq turns the shooting problem into R(B)=0 and reliably finds the B that enforces f'(∞)=1.
+# expected value f''(0) ≈ 0.332 (canonical solution from lectures and quoted heavily on internet for this given case)
+# - High-accuracy numerical solutions of the Blasius ODE give:
+# f''(0) ≈ 0.332043934904293 (Wikipedia, 2025) (commonly quoted ≈ 0.332)
+# - This value is the curvature for the Blasius boundary layer and is used to compute wall shear/coefficient
+# values (e.g. Cf = 0.664 / sqrt(Re_x) using f''(0)=0.332).
+# - Reference: standard course notes/Blasius derivation (see Week 2 lecture notes / Blasius assessment material).
+# - In short: 0.332 is a numerically determined constant characterising the Blasius solution, not an algebraic result, hence we must find it via
+# a numerical method i.e., the shooting method.
+# Callback on function 'integrate_for_Bstar' (Integrator) using B_found
+f_sol, fp_sol, fpp_sol = integrate_for_Bstar(B_found)
+print(" Check: f'(zeta_max) (should be ≈1) =", fp_sol[-1]) # Check performed, B_found value allows f' to converge to ≈1. (If f' =/= 1, func error.)
+# Find zeta for first crossing of target f'
+def find_zeta_for_fp(fp_array, target, z_grid=zeta):
+ """
+ Return first ζ (closest-to-wall) such that: f'(ζ) >= target using linear interpolation.
+ Ensures target lies within the computed range (no extrapolation).
+ Picks the first crossing because physically we want the nearest wall location where u_x reaches target*U_inf.
+ Linear interpolation (np.interp) between adjacent grid points is accurate due to small dzeta.
+ """
+ fp_min, fp_max = np.min(fp_array), np.max(fp_array)
+ if target < fp_min or target > fp_max:
+ return None
+ idx = np.where(fp_array >= target)[0]
+ if len(idx) == 0:
+ return None
+ i = idx[0]
+ if i == 0:
+ return z_grid[0]
+ return np.interp(target, fp_array[i-1:i+1], z_grid[i-1:i+1])
+# (b): locate ζ where u_x = B_given * U_inf (use B_given = 0.57 only here)
+zeta_at_B_given = find_zeta_for_fp(fp_sol, B_given)
+if zeta_at_B_given is not None:
+ y_at_B = zeta_at_B_given * np.sqrt(nu * x_m / U_inf) # physical y (m)
+ ux_at_B = B_given * U_inf # u_x at that point (m/s)
+ f_interp_B = np.interp(zeta_at_B_given, zeta, f_sol)
+ fp_interp_B = np.interp(zeta_at_B_given, zeta, fp_sol)
+ uy_over_U_at_B = 0.5 * np.sqrt(nu / (U_inf * x_m)) * (zeta_at_B_given * fp_interp_B - f_interp_B)
+ uy_at_B = uy_over_U_at_B * U_inf
+ print("\nPART (b) results:")
+ print(f" y_B (m) = {y_at_B}, y_B (mm) = {y_at_B * 1e3:.3f} → wall-normal distance where u_x = B·U∞ (x = 300 mm)")
+ print(f" u_x (m/s) = {ux_at_B:.16f} ≈ {ux_at_B:.3f} → local streamwise velocity at y_B")
+ print(f" u_y (m/s) = {uy_at_B:.16f} ≈ {uy_at_B:.3f} → local wall-normal velocity at y_B")
+else:
+ print("PART (b): ζ for B_given not found in zeta domain, increase zeta_max or change the range")
+# (c): δ_99 and displacement thickness δ*
+zeta_at_099 = find_zeta_for_fp(fp_sol, 0.99)
+if zeta_at_099 is not None:
+ delta99 = zeta_at_099 * np.sqrt(nu * x_m / U_inf)
+ print("\nPART (c) results:")
+ print(f" δ_99 (m) = {delta99:}, δ_99 (mm) = {delta99 * 1e3:.3f} → boundary-layer thickness where u_x = 0.99*U∞")
+
+ # compare to the empirical formula δ_99 ≈ 5 * sqrt(nu * x / U_inf)
+ delta99_formula = 5 * np.sqrt(nu * x_m / U_inf)
+ percent_diff = 100 * (delta99 - delta99_formula) / delta99_formula
+ print(f" δ_99_formula (m) = {delta99_formula:}, δ_99_formula (mm) = {delta99_formula * 1e3:.3f} → approximate empirical estimate
+(δ_99=5√(νx/U∞)).") # Approx. Empirical Estimate (Tabor, 2025)
+ # d99_formula is an empirical approximation that assumes the 99% convention.
+ print(" % difference =", f"{percent_diff:.4f}%","→ (δ_99 – δ_99_formula ) / δ_99_formula × 100")
+else:
+ print("\nPART (c): ζ_99 not found in zeta domain (increase zeta_max).")
+# displacement thickness δ*
+integrand = 1 - fp_sol
+int_val = trapezoid(integrand, zeta)
+delta_star = np.sqrt(nu * x_m / U_inf) * int_val
+print(f" δ* (m) = {delta_star:.6f}, δ* (mm) = {delta_star * 1e3:.3f} → displacement thickness (numerical integration up to ζ_max).")
+# Plots for (a)
+plt.figure(figsize=(10,6))
+plt.plot(zeta, fp_sol, label=f"f'(ζ), f''(0)={B_found:.6f}")
+plt.axhline(1, linestyle=':', label='ux/U∞ = 1')
+plt.xlabel("Similarity variable (ζ)"); plt.ylabel("ux/U∞"); plt.title("(a): Blasius profile: f'(ζ), (ux/U∞ vs ζ)")
+plt.grid(True); plt.legend()
+plt.savefig("blasius_fprime_vs_zeta.png", dpi=800)
+plt.show()
+plt.figure(figsize=(10,6))
+plt.plot(zeta, f_sol, label='f(ζ)')
+plt.xlabel('Similarity variable (ζ)'); plt.ylabel('f(ζ)'); plt.title('(a): Blasius stream function solution, (f(ζ) vs ζ)')
+plt.grid(True); plt.legend()
+plt.savefig("blasius_f_vs_zeta.png", dpi=800)
+plt.show()
+# APPENDIX: PART (b) plots (zoom + u_y)
+# Added becuase it is very easy to visualise where these values (y, u_x and u_y) are coming from.
+if zeta_at_B_given is not None:
+ pad = 0.5
+ z_min_zoom = max(0, zeta_at_B_given - pad)
+ z_max_zoom = min(zeta_max, zeta_at_B_given + pad)
+ zoom_mask = (zeta >= z_min_zoom) & (zeta <= z_max_zoom)
+ plt.figure(figsize=(10,6))
+ plt.plot(zeta[zoom_mask], fp_sol[zoom_mask], label="f'(ζ) (zoomed)")
+ plt.axvline(zeta_at_B_given, color='r', linestyle=':', label=f'ζ_B_given = {zeta_at_B_given:.4f}')
+ plt.axhline(B_given, color='r', linestyle=':', label=f'u_x/U_inf = B_given = {B_given}')
+ plt.plot(zeta_at_B_given, B_given, 'o', markersize=8, markeredgecolor='r', markerfacecolor='r')
+ annotation_str = (f"y = {y_at_B*1e3:.3f} mm\nu_x = {ux_at_B:.3f} m/s\nu_y = {uy_at_B:.4e} m/s")
+ plt.annotate(annotation_str, xy=(zeta_at_B_given, B_given), xytext=(zeta_at_B_given + 0.31, B_given + 0.05),
+ arrowprops=dict(arrowstyle="->"), fontsize=9, bbox=dict(boxstyle="round,pad=0.3", alpha=0.9))
+ plt.xlabel('Similarity variable (ζ)'); plt.ylabel('ux/U∞')
+ plt.title('Appendix (PART (b): Localised view of where u_x = B_given * U_inf')
+ plt.grid(True); plt.legend()
+ plt.savefig("blasius_zoom_Bgiven.png", dpi=600)
+ plt.show()
+#use the FIRST crossing (closest to wall) so y_B is the relevant distance from the surface.
+print("CODE APPENDIX:")
+print("Grid: zeta_max = {:.1f}, n_points = {}".format(zeta_max, n_points)) # Grid info
+print(" ζ_B_given (b) =", zeta_at_B_given) # Zeta at B_given
+print(" ζ_99 (c) =", zeta_at_099) #Zeta99
+dy_resolution = dzeta * np.sqrt(nu * x_m / U_inf) # calculates resolution, physical y-step = dzeta * sqrt(nu x / U)
+print(f" physical dy resolution = {dy_resolution:.6e} m = {dy_resolution*1e6:.3f} μm")
+print(" This gives many points across the boundary layer.")
+#REFERENCES USED IN CODE
+#Tabor, G., 2025. Exam Formulae Sheet - module ENG3005 [PDF]. [Online]
+#Available at: https://ele.exeter.ac.uk/pluginfile.php/5206777/mod_label/intro/FormulaSheetExam.pdf
+#[Accessed 30 09 2025].
+Wikipedia, 2025. Blasius boundary layer. [Online]
+Available at: https://en.wikipedia.org/wiki/Blasius_boundary_layer
+[Accessed 10 07 2025].
